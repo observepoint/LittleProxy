@@ -342,6 +342,12 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
             // already disconnected
             if (isConnecting() || getCurrentState().isDisconnectingOrDisconnected()) {
                 LOG.debug("Connection failed or timed out while waiting to write message to server. Message will be discarded: {}", msg);
+
+                // release when disconnected.
+                if (initialRequest instanceof ReferenceCounted) {
+                    ((ReferenceCounted)initialRequest).release();
+                }
+
                 return;
             }
 
@@ -572,7 +578,7 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
                             .serverSslEngine()));
                 } else {
                     connectionFlow.then(serverConnection.EncryptChannel(proxyServer.getMitmManager()
-                            .serverSslEngine(parsedHostAndPort.getHostText(), parsedHostAndPort.getPort())));
+                            .serverSslEngine(parsedHostAndPort.getHost(), parsedHostAndPort.getPort())));
                 }
 
             	connectionFlow
@@ -654,6 +660,13 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
              * when the next request is written. Writing the EmptyLastContent
              * resets its state.
              */
+            if (initialRequest instanceof ReferenceCounted) {
+                // Retain message before connecting to chain proxy as it does additional write of initial request
+
+                LOG.debug("Retaining reference counted message");
+                ((ReferenceCounted) initialRequest).retain();
+            }
+
             if(isMitmEnabled){
                 ChannelFuture future = writeToChannel(initialRequest);
                 future.addListener(new ChannelFutureListener() {
@@ -931,12 +944,6 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
             LOG.debug("Dropping initial request: {}", initialRequest);
         }
 
-        // we're now done with the initialRequest: it's either been forwarded to the upstream server (HTTP requests), or
-        // completely dropped (HTTPS CONNECTs). if the initialRequest is reference counted (typically because the HttpObjectAggregator is in
-        // the pipeline to generate FullHttpRequests), we need to manually release it to avoid a memory leak.
-        if (initialRequest instanceof ReferenceCounted) {
-            ((ReferenceCounted)initialRequest).release();
-        }
     }
 
     /**
@@ -958,7 +965,7 @@ public class ProxyToServerConnection extends ProxyConnection<HttpResponse> {
             throw new UnknownHostException(hostAndPort);
         }
 
-        String host = parsedHostAndPort.getHostText();
+        String host = parsedHostAndPort.getHost();
         int port = parsedHostAndPort.getPortOrDefault(80);
 
         return proxyServer.getServerResolver().resolve(host, port);
